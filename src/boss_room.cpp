@@ -1,4 +1,6 @@
 #include "dungeon_layout.h"
+#include "boss_names.h"
+#include "checkpoint_text.h"
 
 #include <algorithm>
 #include <array>
@@ -29,7 +31,8 @@ constexpr const char* BossModels[]{
 };
 constexpr std::size_t ModelCount = std::size(BossModels);
 static_assert(ModelCount == SoloBossCount + CouncilSize);
-constexpr std::size_t NamesPerModel = 3;
+static_assert(ModelCount == DescentNames::BossCount);
+constexpr auto NamesPerModel = DescentNames::RegularNameCount;
 struct Escort {
     std::size_t model;
     const char* monster;
@@ -126,9 +129,20 @@ using InitRoomFn = void(__fastcall*)(std::uint8_t bank, void* room) noexcept;
 using AllocatePresetUnitFn = void*(__fastcall*)(std::uint8_t bank, void* room, std::int32_t type,
     std::int32_t classId, std::int32_t mode, std::int32_t x, std::int32_t y) noexcept;
 
+using UnitNameFn = const char*(__fastcall*)(const void* unit) noexcept;
+using UnitRoomFn = const void*(__fastcall*)(const void* unit) noexcept;
+using RoomLevelFn = std::uint32_t(__fastcall*)(const void* room) noexcept;
+using IsSinglePlayerFn = bool(__fastcall*)() noexcept;
+
 const D2RL::DataTableService* tables = nullptr;
 AllocatePresetUnitFn allocatePresetUnit = nullptr;
 std::atomic<InitRoomFn> originalInitRoom = nullptr;
+std::atomic<UnitNameFn> originalUnitName = nullptr;
+UnitRoomFn getNameUnitRoom = nullptr;
+RoomLevelFn getNameRoomLevel = nullptr;
+IsSinglePlayerFn isSinglePlayer = nullptr;
+const D2RL::PluginContext* nameContext = nullptr;
+const D2RL::LocalizationService* localization = nullptr;
 // A model's three name variants are published together.
 using BossPool = std::array<std::uint64_t, ModelCount>;
 std::array<std::array<std::atomic<std::uint64_t>, ModelCount>, SectionCount> bossClassIds{};
@@ -230,7 +244,60 @@ BossPool LoadBossPool(std::size_t section) noexcept {
     return pool;
 }
 
-bool ContainsBoss(const BossPool& pool, std::uint32_t classId) noexcept {
+const DescentNames::Locale& BossNameLocale(std::uint32_t sessionSeed) noexcept {
+    // The first floor uses a distinct label in each translation.
+    // Spanish (Spain) and Spanish (Mexico) share a label and name set.
+    thread_local std::uint32_t previousSeed = 0;
+    thread_local const auto* current = &DescentNames::Locales[0];
+    if (previousSeed != sessionSeed) {
+        previousSeed = sessionSeed;
+        current = &DescentNames::Locales[0];
+        char label[96]{};
+        std::uint32_t requiredSize{};
+        if (localization && localization->getStringByKey(nameContext, "d2r:GrailerDescentFloor01",
+                label, sizeof(label), &requiredSize) == D2RL::Localization::Result::Success) {
+            const auto match = std::ranges::find(DescentNames::Locales, std::string_view(label),
+                                                &DescentNames::Locale::firstFloorLabel);
+            if (match != std::end(DescentNames::Locales)) current = match;
+        }
+    }
+    return *current;
+}
+
+const char* CheckpointBossName(const BossPool& pool, std::uint16_t classId, std::uint32_t floor,
+                               std::uint32_t sessionSeed) noexcept {
+    if (classId == 0) return nullptr;
+    for (std::size_t model = 0; model < pool.size(); ++model) {
+        const auto nameCount = model < SoloBossCount ? NamesPerModel : 1;
+        for (std::size_t name = 0; name < nameCount; ++name) {
+            if (BossClassId(pool[model], name) != classId) continue;
+            const auto seed = MixDungeonSeed(sessionSeed ^ (floor * 0xE74D3C2BU)
+                ^ (static_cast<std::uint32_t>(model) * 0x759C31D9U));
+            const auto regular = model < SoloBossCount ? name : MixDungeonSeed(seed ^ 0xB1A89FC5U) % NamesPerModel;
+            return SelectCheckpointText(seed, model, BossNameLocale(sessionSeed).names[model][regular]);
+        }
+    }
+    return nullptr;
+}
+
+const char* __fastcall UnitName(const void* unit) noexcept {
+    const auto sessionSeed = DungeonSessionSeed();
+    if (sessionSeed != 0 && unit != nullptr && ReadField<std::int32_t>(unit, 0) == MonsterUnitType
+        && ReadField<std::uint8_t>(unit, 0x1BD) == static_cast<std::uint8_t>(Bank::Rotw)
+        && isSinglePlayer()) {
+        const auto floor = dungeonPlacement.Floor(getNameRoomLevel(getNameUnitRoom(unit)));
+        if (floor != 0 && floor % SectionSize == 0) {
+            const auto pool = LoadBossPool(floor / SectionSize - 1);
+            const auto classId = ReadField<std::uint16_t>(unit, 4);
+            if (const auto* replacement = CheckpointBossName(pool, classId, floor, sessionSeed))
+                return replacement;
+        }
+    }
+    const auto original = originalUnitName.load(std::memory_order_acquire);
+    return original ? original(unit) : nullptr;
+}
+
+bool ContainsBoss(std::span<const std::uint64_t> pool, std::uint32_t classId) noexcept {
     if (classId == 0) {
         return false;
     }
@@ -446,11 +513,72 @@ constexpr std::uint8_t PresetMapFields[]{
 constexpr std::uint8_t MapSeedStore[]{0x89, 0x9F, 0x40, 0x08, 0x00, 0x00, 0x8B, 0x85, 0x28, 0x08, 0x00, 0x00};
 constexpr std::uint8_t DifficultyLoad[]{0x44, 0x0F, 0xB6, 0x8D, 0x30, 0x08, 0x00, 0x00, 0x45, 0x33, 0xDB};
 
+bool InstallBossNames(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept {
+    constexpr std::uintptr_t unitNameRva = 0x9A1B0;
+    constexpr std::uintptr_t unitRoomRva = 0x34B440;
+    constexpr std::uintptr_t roomLevelRva = 0x2EFC10;
+    constexpr std::uintptr_t singlePlayerRva = 0x8D4B0;
+    constexpr std::uint8_t nameEntry[]{
+        0x40, 0x53, 0x57, 0x41, 0x56, 0x48, 0x83, 0xEC, 0x40, 0x4C, 0x8B, 0xF1, 0xE8, 0x1F, 0xFF, 0x2A, 0x00,
+    };
+    constexpr std::uint8_t nameCaller[]{0xE8, 0xC5, 0xB6, 0xFC, 0xFF, 0x48, 0x8B, 0xD8};
+    constexpr std::uint8_t monsterBranch[]{
+        0x45, 0x8B, 0x06, 0x0F, 0xB6, 0xD8, 0x45, 0x85, 0xC0, 0x0F, 0x84, 0x60, 0x02, 0x00, 0x00,
+        0x41, 0x83, 0xE8, 0x01, 0x0F, 0x84, 0x13, 0x02, 0x00, 0x00,
+    };
+    constexpr std::uint8_t classRead[]{0x41, 0x0F, 0xBF, 0x56, 0x04, 0x0F, 0xB6, 0xCB};
+    constexpr std::uint8_t bankRead[]{0x0F, 0xB6, 0x81, 0xBD, 0x01, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x28, 0xC3};
+    constexpr std::uint8_t roomEntry[]{
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x48, 0x85, 0xC9, 0x75, 0x13,
+    };
+    constexpr std::uint8_t roomPath[]{
+        0x8B, 0x0B, 0x83, 0xE9, 0x02, 0x74, 0x25, 0x83, 0xE9, 0x02, 0x74, 0x20, 0x83, 0xF9, 0x01,
+        0x74, 0x1B, 0x48, 0x8B, 0x4B, 0x38, 0x48, 0x85, 0xC9, 0x74, 0x0A, 0x48, 0x83, 0xC4, 0x20,
+        0x5B, 0xE9, 0xAB, 0x67, 0xFF, 0xFF,
+    };
+    constexpr std::uint8_t roomLevelEntry[]{
+        0x48, 0x85, 0xC9, 0x75, 0x03, 0x33, 0xC0, 0xC3, 0x48, 0x8B, 0x49, 0x18, 0xE9, 0x9F, 0x13, 0x07, 0x00,
+    };
+    constexpr std::uint8_t singlePlayerEntry[]{0x83, 0x3D, 0x3D, 0x5F, 0x99, 0x02, 0x00, 0x0F, 0x94, 0xC0, 0xC3};
+    if (!context->CheckExpectedBytes(0xCEAE6, nameCaller, sizeof(nameCaller))
+        || !context->CheckExpectedBytes(0x9A1C1, monsterBranch, sizeof(monsterBranch))
+        || !context->CheckExpectedBytes(0x9A412, classRead, sizeof(classRead))
+        || !context->CheckExpectedBytes(0x34A103, bankRead, sizeof(bankRead))
+        || !context->CheckExpectedBytes(unitRoomRva, roomEntry, sizeof(roomEntry))
+        || !context->CheckExpectedBytes(0x34B461, roomPath, sizeof(roomPath))
+        || !context->CheckExpectedBytes(roomLevelRva, roomLevelEntry, sizeof(roomLevelEntry))
+        || !context->CheckExpectedBytes(0x360FC0, LevelIdGetter, sizeof(LevelIdGetter))
+        || !context->CheckExpectedBytes(singlePlayerRva, singlePlayerEntry, sizeof(singlePlayerEntry))) {
+        context->LogWarn("Checkpoint name display unavailable. The native unit name path could not be verified.");
+        return true;
+    }
+    const D2RL::LocalizationService* service = nullptr;
+    if (context->QueryService(&service) == D2RL::ServiceQueryResult::Success
+        && D2RL::HasLocalizationServiceField(service, D2RL::LocalizationServiceRequiredSize) && service->getStringByKey) {
+        localization = service;
+    }
+    nameContext = context;
+    getNameUnitRoom = reinterpret_cast<UnitRoomFn>(context->exeBase + unitRoomRva);
+    getNameRoomLevel = reinterpret_cast<RoomLevelFn>(context->exeBase + roomLevelRva);
+    isSinglePlayer = reinterpret_cast<IsSinglePlayerFn>(context->exeBase + singlePlayerRva);
+    const auto status = InstallHook(context, mutations, unitNameRva, nameEntry, UnitName, originalUnitName);
+    if (status != HookStatus::Installed) context->LogWarn("Could not install checkpoint name display.");
+    return status != HookStatus::MissingOriginal;
+}
+
 }  // namespace
 
 bool IsDungeonCheckpointBoss(std::uint32_t floor, std::uint32_t classId) noexcept {
-    return floor != 0 && floor <= DungeonFloorCount && floor % SectionSize == 0
-        && ContainsBoss(LoadBossPool(floor / SectionSize - 1), classId);
+    if (floor == 0 || floor > DungeonFloorCount || floor % SectionSize != 0) return false;
+    const auto pool = LoadBossPool(floor / SectionSize - 1);
+    return ContainsBoss(pool, classId);
+}
+
+bool IsCheckpointAuraBearer(std::uint32_t floor, std::uint32_t classId) noexcept {
+    if (floor == 0 || floor > DungeonFloorCount || floor % SectionSize != 0) return false;
+    const auto pool = LoadBossPool(floor / SectionSize - 1);
+    // The first Council member is the one placed at the main boss position.
+    return ContainsBoss(std::span{pool}.first<SoloBossCount + 1>(), classId);
 }
 
 bool InstallBossRoom(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept {
@@ -488,8 +616,8 @@ bool InstallBossRoom(const D2RL::PluginContext* context, const D2RL::MutationSer
     D2RL::Lifecycle::ListenerHandle handle{};
     if (lifecycle->registerDataTablesLoadedListener(context, &listener, &handle) != D2RL::Lifecycle::Result::Success) {
         context->LogWarn("Dungeon boss unavailable. Could not register for data table loads.");
-    } else {
-        context->LogInfo("Enabled dungeon boss encounters.");
+        return true;
     }
-    return true;
+    context->LogInfo("Enabled dungeon boss encounters.");
+    return InstallBossNames(context, mutations);
 }

@@ -1,5 +1,6 @@
 #include "dungeon_modifiers.h"
 
+#include <algorithm>
 #include <iterator>
 
 namespace {
@@ -8,6 +9,7 @@ constexpr std::uint32_t RollSize = 100000;
 constexpr std::uint32_t FirstModifierChance = 1000;
 constexpr std::uint32_t LastModifierChance = 6000;
 constexpr int AuraLevel = 5;
+constexpr int MonsterHolyFreeze = 365;
 constexpr std::uint8_t AuraEnchanted = 30;
 constexpr std::size_t ModifierCount = 9;
 constexpr std::uintptr_t ModifierTableRva = 0x2395FE0;
@@ -36,9 +38,14 @@ constexpr Aura Auras[]{
     {104, "Defiance"},
     {108, "Blessed Aim"},
     {115, "Vigor"},
-    {365, "Holy Freeze"},
+    {MonsterHolyFreeze, "Holy Freeze"},
     {368, "Holy Fire"},
     {369, "Holy Shock"},
+};
+
+constexpr Aura AdditionalCheckpointAuras[]{
+    {122, "Fanaticism"},
+    {123, "Conviction"},
 };
 
 using ModifierSlotsFn = std::uint8_t*(__fastcall*)(void*) noexcept;
@@ -109,14 +116,25 @@ constexpr std::uint8_t SelectSkillEntry[]{
 constexpr std::uint8_t FindSkillEntry[]{
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x41, 0x8B, 0xD8, 0x8B, 0xFA,
 };
+constexpr std::uint8_t BaseSkillLevelRead[]{0x8B, 0x72, 0x40, 0x45, 0x85, 0xC0};
 
-bool ApplyAura(void* unit, const Aura& aura) noexcept {
+bool ApplyAura(void* unit, const Aura& aura, bool checkpoint = false) noexcept {
     const auto* record = skillRecord(static_cast<std::uint8_t>(D2RL::DataTables::Bank::Rotw), aura.skill);
-    if (record == nullptr || ReadField<std::int16_t>(record, 0) != aura.skill
-        || getRightSkill(unit) != nullptr) {
+    if (record == nullptr || ReadField<std::int16_t>(record, 0) != aura.skill) {
         return false;
     }
-    // Aura Enchanted gives the monster a skill and appoints it as its active right skill.
+    // Duriel only selects his innate Holy Freeze if his right skill is empty.
+    // If he already selected it, replace it through the native skill selector.
+    const auto* current = getRightSkill(unit);
+    if (current != nullptr) {
+        if (!checkpoint) return false;
+        if (current == findSkill(unit, aura.skill, -1)) {
+            if (ReadField<int>(current, 0x40) == AuraLevel) return true;
+        } else if (current != findSkill(unit, MonsterHolyFreeze, -1)) {
+            return false;
+        }
+    }
+    // The game evaluates the selected skill's aura range at its assigned level.
     setSkillLevel(unit, aura.skill, AuraLevel, 1);
     const auto* skill = findSkill(unit, aura.skill, -1);
     if (skill == nullptr) {
@@ -128,29 +146,38 @@ bool ApplyAura(void* unit, const Aura& aura) noexcept {
 
 } // namespace
 
-void EnablePackModifiers(const D2RL::PluginContext* context) noexcept {
+bool EnableMonsterAuraSkills(const D2RL::PluginContext* context) noexcept {
+    if (modifierSlots != nullptr) return true;
     if (!context->CheckExpectedBytes(0x38E34E, ModifierSlotRead, sizeof(ModifierSlotRead))
-        || !context->CheckExpectedBytes(0x38E75E, MonsterFlagRead, sizeof(MonsterFlagRead))
-        || !context->CheckExpectedBytes(0x49E860, ApplyAffixEntry, sizeof(ApplyAffixEntry))
-        || !context->CheckExpectedBytes(0x49E8A4, AffixTableReference, sizeof(AffixTableReference))
-        || !context->CheckExpectedBytes(0x49E8B7, AffixDispatch, sizeof(AffixDispatch))
-        || !context->CheckExpectedBytes(0x496300, ExtraFastEntry, sizeof(ExtraFastEntry))
-        || !context->CheckExpectedBytes(0x38E430, ResistanceEntry, sizeof(ResistanceEntry))
         || !context->CheckExpectedBytes(0x097790, SkillRecordEntry, sizeof(SkillRecordEntry))
         || !context->CheckExpectedBytes(0x34B421, GetRightSkillRead, sizeof(GetRightSkillRead))
         || !context->CheckExpectedBytes(0x433910, SetSkillLevelEntry, sizeof(SetSkillLevelEntry))
         || !context->CheckExpectedBytes(0x438A70, SelectSkillEntry, sizeof(SelectSkillEntry))
-        || !context->CheckExpectedBytes(0x33DCD0, FindSkillEntry, sizeof(FindSkillEntry))) {
-        context->LogWarn("Descent pack modifiers unavailable. Could not verify native affix and aura helpers.");
-        return;
+        || !context->CheckExpectedBytes(0x33DCD0, FindSkillEntry, sizeof(FindSkillEntry))
+        || !context->CheckExpectedBytes(0x33D218, BaseSkillLevelRead, sizeof(BaseSkillLevelRead))) {
+        return false;
     }
     modifierSlots = reinterpret_cast<ModifierSlotsFn>(context->exeBase + 0x38E310);
-    applyAffix = reinterpret_cast<ApplyAffixFn>(context->exeBase + 0x49E860);
     skillRecord = reinterpret_cast<SkillRecordFn>(context->exeBase + 0x097790);
     getRightSkill = reinterpret_cast<GetRightSkillFn>(context->exeBase + 0x34B400);
     setSkillLevel = reinterpret_cast<SetSkillLevelFn>(context->exeBase + 0x433910);
     selectSkill = reinterpret_cast<SelectSkillFn>(context->exeBase + 0x438A70);
     findSkill = reinterpret_cast<FindSkillFn>(context->exeBase + 0x33DCD0);
+    return true;
+}
+
+void EnablePackModifiers(const D2RL::PluginContext* context) noexcept {
+    if (!EnableMonsterAuraSkills(context)
+        || !context->CheckExpectedBytes(0x38E75E, MonsterFlagRead, sizeof(MonsterFlagRead))
+        || !context->CheckExpectedBytes(0x49E860, ApplyAffixEntry, sizeof(ApplyAffixEntry))
+        || !context->CheckExpectedBytes(0x49E8A4, AffixTableReference, sizeof(AffixTableReference))
+        || !context->CheckExpectedBytes(0x49E8B7, AffixDispatch, sizeof(AffixDispatch))
+        || !context->CheckExpectedBytes(0x496300, ExtraFastEntry, sizeof(ExtraFastEntry))
+        || !context->CheckExpectedBytes(0x38E430, ResistanceEntry, sizeof(ResistanceEntry))) {
+        context->LogWarn("Descent pack modifiers unavailable. Could not verify native affix and aura helpers.");
+        return;
+    }
+    applyAffix = reinterpret_cast<ApplyAffixFn>(context->exeBase + 0x49E860);
     plugin = context;
     D2RL::LogInfoF(context, "Enabled Descent pack modifiers from %g%% to %g%%.",
                   FirstModifierChance * 100.0 / RollSize, LastModifierChance * 100.0 / RollSize);
@@ -190,4 +217,19 @@ void ApplyPackModifier(void* leader, std::uint32_t floor, int monsterId, std::ui
     if (ApplyAura(leader, aura)) {
         slots[0] = AuraEnchanted;
     }
+}
+
+void ApplyCheckpointAura(void* boss, std::uint32_t floor, std::uint32_t sessionSeed) noexcept {
+    auto* slots = modifierSlots(boss);
+    if (slots == nullptr) return;
+    auto* end = slots + ModifierCount;
+    auto* slot = std::find(slots, end, AuraEnchanted);
+    if (slot == end) slot = std::find(slots, end, 0);
+    if (slot == end) return;
+
+    constexpr auto count = std::size(Auras) + std::size(AdditionalCheckpointAuras);
+    const auto choice = MixDungeonSeed(sessionSeed ^ (floor * 0xB8026D41U)) % count;
+    const auto& aura = choice < std::size(Auras) ? Auras[choice]
+        : AdditionalCheckpointAuras[choice - std::size(Auras)];
+    if (ApplyAura(boss, aura, true)) *slot = AuraEnchanted;
 }

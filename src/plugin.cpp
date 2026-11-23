@@ -113,7 +113,7 @@ constexpr D2RL::PluginInfo Info{
     .abiVersion = D2RL_PLUGIN_ABI_VERSION,
     .id = "endgame-descent",
     .name = "Endgame Descent",
-    .version = "1.0.0",
+    .version = "1.2.2",
     .author = "MadMike",
     .description = "Connects the Descent mazes, retains automaps, and places bosses at section ends.",
     .flags = D2RL::PluginFlags::Shared | D2RL::PluginFlags::ModScopedOnly | D2RL::PluginFlags::NativeHooks,

@@ -12,12 +12,14 @@ if not exist "%DESCENT_SDK%\D2RLPlugin\api.h" (
     echo Pass the root directory of D2RLoader PluginSDK 0.4.0 as the first argument.
     exit /b 1
 )
-set "DESCENT_BUILD=%~dp0..\.build\endgame-descent-1.0.0"
+set "DESCENT_BUILD=%~dp0..\.build\endgame-descent-1.2.2"
 if not exist "%DESCENT_BUILD%" mkdir "%DESCENT_BUILD%"
 
 cl.exe /nologo /std:c++20 /W4 /permissive- /EHsc /utf-8 /O2 /MT /DNDEBUG /I"%DESCENT_SDK%" /c "%DESCENT_SOURCE%src\plugin.cpp" /Fo"%DESCENT_BUILD%\plugin.obj"
 if errorlevel 1 exit /b %errorlevel%
 cl.exe /nologo /std:c++20 /W4 /permissive- /EHsc /utf-8 /O2 /MT /DNDEBUG /I"%DESCENT_SDK%" /c "%DESCENT_SOURCE%src\boss_room.cpp" /Fo"%DESCENT_BUILD%\boss_room.obj"
+if errorlevel 1 exit /b %errorlevel%
+cl.exe /nologo /std:c++20 /W4 /permissive- /EHsc /utf-8 /O2 /MT /DNDEBUG /c "%DESCENT_SOURCE%src\checkpoint_text.cpp" /Fo"%DESCENT_BUILD%\checkpoint_text.obj"
 if errorlevel 1 exit /b %errorlevel%
 cl.exe /nologo /std:c++20 /W4 /permissive- /EHsc /utf-8 /O2 /MT /DNDEBUG /I"%DESCENT_SDK%" /c "%DESCENT_SOURCE%src\dungeon_layout.cpp" /Fo"%DESCENT_BUILD%\dungeon_layout.obj"
 if errorlevel 1 exit /b %errorlevel%
@@ -31,5 +33,5 @@ cl.exe /nologo /std:c++20 /W4 /permissive- /EHsc /utf-8 /O2 /MT /DNDEBUG /DNOMIN
 if errorlevel 1 exit /b %errorlevel%
 rc.exe /nologo /I"%DESCENT_SDK%" /I"%DESCENT_SOURCE%src" /fo"%DESCENT_BUILD%\plugin.res" "%DESCENT_SOURCE%src\plugin.rc"
 if errorlevel 1 exit /b %errorlevel%
-link.exe /nologo /DLL /INCREMENTAL:NO /Brepro /MACHINE:X64 /OUT:"%DESCENT_BUILD%\d2rl-endgame-descent.dll" "%DESCENT_BUILD%\plugin.obj" "%DESCENT_BUILD%\boss_room.obj" "%DESCENT_BUILD%\dungeon_layout.obj" "%DESCENT_BUILD%\dungeon_modifiers.obj" "%DESCENT_BUILD%\dungeon_loot.obj" "%DESCENT_BUILD%\dungeon_entrance.obj" "%DESCENT_BUILD%\installer.obj" "%DESCENT_BUILD%\plugin.res" bcrypt.lib
+link.exe /nologo /DLL /INCREMENTAL:NO /Brepro /MACHINE:X64 /OUT:"%DESCENT_BUILD%\d2rl-endgame-descent.dll" "%DESCENT_BUILD%\plugin.obj" "%DESCENT_BUILD%\boss_room.obj" "%DESCENT_BUILD%\checkpoint_text.obj" "%DESCENT_BUILD%\dungeon_layout.obj" "%DESCENT_BUILD%\dungeon_modifiers.obj" "%DESCENT_BUILD%\dungeon_loot.obj" "%DESCENT_BUILD%\dungeon_entrance.obj" "%DESCENT_BUILD%\installer.obj" "%DESCENT_BUILD%\plugin.res" bcrypt.lib
 exit /b %errorlevel%

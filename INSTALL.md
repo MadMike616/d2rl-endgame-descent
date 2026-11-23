@@ -1,4 +1,4 @@
-# Install Endgame Descent 1.0.0
+# Install Endgame Descent
 
 Endgame Descent installs into the mod you select in D2RLoader. It works with a new mod or an existing compatible mod and appends dungeon rows after its existing data. The audited setup is Diablo II: Resurrected 3.4.95032 with D2RLoader 1.3.1-beta. Playing the dungeon requires an offline Reign of the Warlock character who has defeated Hell Baal.
 
@@ -52,12 +52,14 @@ If your mod starts with no game data, copy all 22 files in the table.
 
 ## 5. Restart and enter the dungeon
 
-1. Exit and relaunch D2RLoader with the same mod. Confirm that **Endgame Descent 1.0.0** appears in **Extensions**.
+1. Exit and relaunch D2RLoader with the same mod. Confirm that **Endgame Descent** appears in **Extensions** with the version you installed.
 2. Start offline **Hell** with a **Reign of the Warlock** character who has completed the Hell Baal quest.
 3. In Harrogath, click the wooden door beside the main gate to enter floor 1. Floor 1's up stairs return to the door.
 
 ## Compatibility and rollback
 
 Existing custom area, preset, and warp IDs are supported. Setup needs the stock maze and doorway geometry, the usual Reign of the Warlock table structure, and one free Harrogath transition slot. It reports a conflict if the same physical door is already used, all eight slots are occupied, or a custom map cache needs to be exported as loose DS1 files. Use `endgame-descent.log` to identify the file involved.
+
+Setup matches TXT columns by exact name, so the active mod can use a different column order. It checks for duplicate or empty header names, required key columns, and missing columns with values to transfer before writing any files. If the active table has a `*Creator` column, setup writes `MadMike` in that column on each new row.
 
 Setup backs up edited originals in `<game>\mods\<mod>\d2rloader\plugins\basefiles-and-backups\backups\endgame-descent\<install>`. To undo the install, move any character in Descent back to town and close D2RLoader. Remove the DLL, restore the backed-up files to the same paths relative to `mods\<mod>`, and remove the files listed in `created-files.txt` in that backup. Keep a copy of any edits you made after installing so you can reapply them.

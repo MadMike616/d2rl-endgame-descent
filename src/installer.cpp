@@ -133,16 +133,35 @@ std::vector<std::string> Split(std::string_view text, char separator) {
     }
 }
 
+std::string_view TableKey(const fs::path& file) {
+    const auto name = file.filename();
+    if (name == L"levels.txt" || name == L"lvlwarp.txt" || name == L"monstats.txt") return "Id";
+    if (name == L"lvlmaze.txt" || name == L"monlvl.txt") return "Level";
+    if (name == L"lvlprest.txt") return "Def";
+    if (name == L"treasureclassex.txt") return "Treasure Class";
+    if (name == L"armor.txt" || name == L"weapons.txt" || name == L"misc.txt") return "code";
+    throw std::logic_error("No table key defined for " + Utf8(file));
+}
+
 struct Tsv {
     using Row = std::vector<std::string>;
 
-    explicit Tsv(std::string bytes) {
+    Tsv(std::string bytes, const fs::path& file) : key(TableKey(file)) {
         const auto eol = bytes.find('\n');
         newline = eol != bytes.npos && eol != 0 && bytes[eol - 1] == '\r' ? "\r\n" : "\n";
         header = bytes.substr(0, eol);
         if (header.ends_with('\r')) header.pop_back();
         bytes.erase(0, eol == bytes.npos ? bytes.size() : eol + 1);
         columns = Split(header.starts_with("\xef\xbb\xbf") ? std::string_view(header).substr(3) : header, '\t');
+        std::set<std::string_view> names;
+        for (const auto& name : columns) {
+            if (name.empty()) throw std::runtime_error(Utf8(file) + " has an empty column name.");
+            if (!names.insert(name).second)
+                throw std::runtime_error(Utf8(file) + " has a duplicate column named " + name + ".");
+        }
+        if (!names.contains(key))
+            throw std::runtime_error(Utf8(file) + " is missing required key column " + std::string(key) + ".");
+
         std::string_view remaining(bytes);
         while (!remaining.empty()) {
             const auto end = remaining.find('\n');
@@ -150,7 +169,8 @@ struct Tsv {
             const bool crlf = line.ends_with('\r');
             if (crlf) line.remove_suffix(1);
             auto row = Split(line, '\t');
-            if (row.size() > columns.size()) throw std::runtime_error("A row has more fields than its header.");
+            if (row.size() > columns.size())
+                throw std::runtime_error(Utf8(file) + " has a row with more fields than its header.");
             rows.push_back(std::move(row));
             rowEndings.emplace_back(end == remaining.npos ? "" : crlf ? "\r\n" : "\n");
             if (end == remaining.npos) break;
@@ -175,16 +195,22 @@ struct Tsv {
         row[i] = std::move(value);
     }
 
-    void Patch(Row& row, const Json& values) const {
-        for (const auto& [key, value] : values.items()) {
-            if (std::ranges::find(columns, key) != columns.end()) Set(row, key, value.get<std::string>());
-            else if (!key.starts_with('*') && value != "") throw std::runtime_error("Missing table column " + key);
+    // A supplied template is copied from this same table and already uses its column order.
+    void Add(const Json& values, Row row = {}) {
+        if (!values.is_object() || !values.contains(key))
+            throw std::runtime_error("Descent source row is missing key column " + std::string(key) + ".");
+        row.resize(columns.size());
+        for (const auto& [name, field] : values.items()) {
+            if (name.empty()) throw std::runtime_error("Descent source row has an empty column name.");
+            if (name == "*Creator") continue;
+            const auto& value = field.get_ref<const std::string&>();
+            const auto column = std::ranges::find(columns, name);
+            if (column != columns.end()) row[column - columns.begin()] = value;
+            else if (!value.empty())
+                throw std::runtime_error("Missing active column " + name + " for a nonempty Descent source value.");
         }
-    }
-
-    void Add(const Json& values) {
-        Row row(columns.size());
-        Patch(row, values);
+        const auto creator = std::ranges::find(columns, "*Creator");
+        if (creator != columns.end()) row[creator - columns.begin()] = "MadMike";
         rows.push_back(std::move(row));
     }
 
@@ -206,6 +232,9 @@ struct Tsv {
     Row columns;
     std::vector<Row> rows;
     std::vector<std::string_view> rowEndings;
+
+private:
+    std::string_view key;
 };
 
 Json Parse(const std::string& bytes) {
@@ -520,9 +549,8 @@ std::string MergeBosses(Tsv table, const Json& seed) {
         if (ids.contains(id)) throw std::runtime_error("monstats.txt already defines " + id);
         if (!ids.contains(source)) throw std::runtime_error("monstats.txt is missing the boss template " + source);
         auto row = table.rows[ids.at(source)];
-        table.Patch(row, patch);
         table.Set(row, "*hcIdx", std::to_string(++last));
-        table.rows.push_back(std::move(row));
+        table.Add(patch, std::move(row));
     }
     return table.Serialize();
 }
@@ -532,21 +560,27 @@ std::string MergeScaling(Tsv table) {
     if (anchor < 110) throw std::runtime_error("monlvl.txt must extend through at least monster level 110.");
     std::vector<Tsv::Row> scalingRows;
     for (const auto& row : table.rows) if (Number(table.Get(row, "Level"))) scalingRows.push_back(row);
+    constexpr std::string_view statColumns[]{
+        "AC", "AC(N)", "AC(H)", "L-AC", "L-AC(N)", "L-AC(H)",
+        "TH", "TH(N)", "TH(H)", "L-TH", "L-TH(N)", "L-TH(H)",
+        "HP", "HP(N)", "HP(H)", "L-HP", "L-HP(N)", "L-HP(H)",
+        "DM", "DM(N)", "DM(H)", "L-DM", "L-DM(N)", "L-DM(H)",
+        "XP", "XP(N)", "XP(H)", "L-XP", "L-XP(N)", "L-XP(H)",
+    };
     const auto& stats = scalingRows.back();
     for (int level = anchor + 1; level <= 147; ++level) {
-        auto row = stats;
-        for (const auto& name : table.columns) {
-            if (name == "Level" || name.empty() || name.starts_with('*')) continue;
+        Json row{{"Level", std::to_string(level)}};
+        for (const auto name : statColumns) {
+            if (std::ranges::find(table.columns, name) == table.columns.end()) continue;
             const auto start = Number(table.Get(scalingRows[99], name));
             const auto end = Number(table.Get(scalingRows[109], name));
             const auto value = Number(table.Get(stats, name));
-            if (!start || !end || !value) throw std::runtime_error("monlvl.txt has invalid values in " + name);
+            if (!start || !end || !value) throw std::runtime_error("monlvl.txt has invalid values in " + std::string(name));
             const auto scaled = static_cast<std::int64_t>(*end - static_cast<std::int64_t>(*start)) * (level - anchor) + 5;
             const auto increment = (scaled < 0 ? scaled - 9 : scaled) / 10;
-            table.Set(row, name, std::to_string(std::max<std::int64_t>(0, *value + increment)));
+            row[name] = std::to_string(std::max<std::int64_t>(0, *value + increment));
         }
-        table.Set(row, "Level", std::to_string(level));
-        table.rows.push_back(std::move(row));
+        table.Add(row);
     }
     return table.Serialize();
 }
@@ -603,7 +637,8 @@ std::string MergeTreasure(Tsv table, const Json& seed, const Inputs& inputs) {
     std::set<std::string, std::less<>> codes;
     std::vector<Drop> exceptional, elite;
     for (const auto* filename : {L"armor.txt", L"weapons.txt", L"misc.txt"}) {
-        const auto items = Tsv(Read(inputs.at(fs::path(Excel) / filename)));
+        const auto& input = inputs.at(fs::path(Excel) / filename);
+        const auto items = Tsv(Read(input), input);
         for (const auto& row : items.rows) {
             const auto code = items.Get(row, "code");
             if (code.empty()) continue;
@@ -805,9 +840,17 @@ std::string MergeStrings(const Paths& paths, const Inputs& inputs, const Json& s
 }
 
 std::string MergeModels(Json models, const Json& seed) {
+    std::vector<std::pair<std::string, std::string>> aliases;
     for (const auto& boss : seed.at("bosses")) {
-        const auto source = boss[0].get<std::string>();
-        const auto id = boss[1].at("Id").get<std::string>();
+        aliases.emplace_back(boss[1].at("Id").get<std::string>(), boss[0].get<std::string>());
+    }
+    // The unnumbered Descent IDs belong to floor 10. The model map is keyed by name.
+    std::ranges::sort(aliases, {}, [](const auto& alias) {
+        auto id = std::string_view(alias.first).substr("descent"sv.size());
+        const auto separator = id.find('_');
+        return std::pair{Number(id.substr(0, separator)).value_or(10), id.substr(separator + 1)};
+    });
+    for (const auto& [id, source] : aliases) {
         if (models.contains(id)) throw std::runtime_error("monsters.json already defines the model " + id);
         if (!models.contains(source)) throw std::runtime_error("monsters.json is missing the model " + source);
         auto model = models.at(source);
@@ -841,7 +884,7 @@ bool CheckInstalled(const Paths& paths, const D2RL::PluginContext& context) {
     }
     if (missing) throw std::runtime_error("Installed Descent data is incomplete. See the paths above.");
     if (!levels) throw std::runtime_error("levels.txt changed during setup. Restart D2RLoader to retry.");
-    const auto table = Tsv(*levels);
+    const auto table = Tsv(*levels, paths.Target(relative));
     DungeonPlacement placement{};
     for (const auto& row : table.rows) {
         if (table.Get(row, "LevelName") != "GrailerDescentFloor01") continue;
@@ -878,7 +921,7 @@ bool CheckInstalled(const Paths& paths, const D2RL::PluginContext& context) {
     placement.doorSlot = slot;
 
     const auto presetsPath = paths.Target(fs::path(Excel) / L"lvlprest.txt");
-    const auto presets = Tsv(Read(presetsPath));
+    const auto presets = Tsv(Read(presetsPath), presetsPath);
     constexpr std::string_view names[]{"n", "s", "e", "w"};
     std::uint32_t found = 0;
     for (const auto& row : presets.rows) {
@@ -926,11 +969,18 @@ InstallResult Install(const Paths& paths, const D2RL::PluginContext& context) {
         if (!edit.original || edit.value != *edit.original) edits.push_back(std::move(edit));
     };
     const auto merge = [&](const fs::path& relative, const auto& make) { stage(prepare(relative), make); };
+    const auto mergeTable = [&](const wchar_t* name, const auto& make) {
+        const auto relative = fs::path(Excel) / name;
+        auto edit = prepare(relative);
+        Tsv table(edit.value, inputs.at(relative));
+        stage(std::move(edit), [&](const std::string&) { return make(std::move(table)); });
+    };
     auto levelEdit = prepare(levelFile);
     auto presetEdit = prepare(presetFile);
     auto warpEdit = prepare(warpFile);
     auto townEdit = prepare(Town);
-    Tsv levels(levelEdit.value), presets(presetEdit.value), warps(warpEdit.value);
+    Tsv levels(levelEdit.value, inputs.at(levelFile)), presets(presetEdit.value, inputs.at(presetFile)),
+        warps(warpEdit.value, inputs.at(warpFile));
     const auto [warp, unique] = NextWarpIds(warps, levels);
     auto placement = AllocatePlacement(levels, presets, warp);
     try { ChooseDoorSlot(placement, levels, townEdit.value); }
@@ -940,10 +990,10 @@ InstallResult Install(const Paths& paths, const D2RL::PluginContext& context) {
     stage(std::move(presetEdit), [&](const std::string&) { return MergePresets(std::move(presets), seed, placement); });
     stage(std::move(warpEdit), [&](const std::string&) { return MergeWarps(std::move(warps), seed.at("warp"), warp, unique); });
     stage(std::move(townEdit), [&](const std::string& bytes) { return MergeTown(bytes, placement.doorSlot); });
-    merge(fs::path(Excel) / L"lvlmaze.txt", [&](const std::string& bytes) { return MergeMazes(Tsv(bytes), seed, placement); });
-    merge(fs::path(Excel) / L"monstats.txt", [&](const std::string& bytes) { return MergeBosses(Tsv(bytes), seed); });
-    merge(fs::path(Excel) / L"monlvl.txt", [&](const std::string& bytes) { return MergeScaling(Tsv(bytes)); });
-    merge(fs::path(Excel) / L"treasureclassex.txt", [&](const std::string& bytes) { return MergeTreasure(Tsv(bytes), seed, inputs); });
+    mergeTable(L"lvlmaze.txt", [&](Tsv table) { return MergeMazes(std::move(table), seed, placement); });
+    mergeTable(L"monstats.txt", [&](Tsv table) { return MergeBosses(std::move(table), seed); });
+    mergeTable(L"monlvl.txt", MergeScaling);
+    mergeTable(L"treasureclassex.txt", [&](Tsv table) { return MergeTreasure(std::move(table), seed, inputs); });
     merge(TownHD, [&](const std::string& bytes) { return MergeTownHD(Parse(bytes), seed.at("light")); });
     merge(fs::path(Strings) / L"ui.json", [&](const std::string&) { return MergeStrings(paths, inputs, seed); });
     merge(Models, [&](const std::string& bytes) { return MergeModels(Parse(bytes), seed); });

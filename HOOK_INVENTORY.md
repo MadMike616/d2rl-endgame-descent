@@ -6,9 +6,9 @@
 |---|---|
 | Plugin name | Endgame Descent |
 | Plugin ID | endgame-descent |
-| Release version | 1.0.0 |
-| Inventory updated | 2026-11-17 |
-| Source revision | v1.0.0 |
+| Release version | 1.2.2 |
+| Inventory updated | 2026-11-23 |
+| Source revision | v1.2.2 release source |
 | D2R build(s) audited | 3.4.95032 through D2RLoader 1.3.1-beta |
 | D2RLoader SDK / Plugin ABI | SDK 0.4.0 / ABI 4 |
 | Audit status | Complete |
@@ -34,6 +34,9 @@ Inspected src/plugin.cpp, src/boss_room.cpp, src/dungeon_layout.cpp, src/dungeon
 | H-11 | Inline | Native client unit selection | RVA 0xF2B40 | Hide the locked Harrogath Descent warp from hover selection and publish the unlocked door's selection state | Exact entry, warp branch, room accessor, data bank, client DRLG difficulty, and quest-record bytes. Requires Harrogath and the configured Descent warp. | src/dungeon_entrance.cpp / SetSelection | The client uses its synchronized quest record. Game exit clears the hover state. |
 | H-12 | Inline | Native scene light preparation | RVA 0xE17F00 | Apply the door light color and power for the lighting pass when the unlocked door is selected | Exact entry, render registry, point-light storage and stride, and color writer bytes. Requires one dormant light matching the town preset's radius and attenuation. | src/dungeon_entrance.cpp / PrepareLights | The light comes from the HD town preset. The hook restores its dormant values after native light preparation. |
 | H-13 | Inline | Native ordinary pack spawn | RVA 0x50B7E0 | Roll for reinforcements and a leader modifier after spawning the ordinary pack | Exact entry, pack size, population caller, native seed update, member placement, and modifier helper bytes. Requires validated Descent tables, offline RotW Hell, and an ordinary population call with a valid pack size. | src/dungeon_layout.cpp / SpawnPack | Uses native follower placement, affix initialization, and aura skill selection. |
+| H-14 | Inline | Native unit display-name lookup | RVA 0x9A1B0 | Supply localized display names for checkpoint bosses | Exact entry, HUD caller, monster type and class reads, unit bank, room and level paths, and offline predicate bytes. Requires a Descent session seed and a checkpoint class ID resolved from MonStats for that floor. | src/boss_room.cpp / UnitName | All other name lookups use the original function. |
+| H-15 | Inline | Native preset monster spawn | RVA 0x50A050 | Assign the checkpoint encounter's level 5 aura after native monster creation | Exact entry, preset caller, room and level layout, difficulty and bank reads, and native aura helper bytes. Requires offline RotW Hell and a matching checkpoint aura bearer class ID for the floor. | src/dungeon_layout.cpp / SpawnPresetMonster | Includes preset stair rooms that suppress ordinary monster population. The game uses the selected skill's native radius. One Council member is eligible. |
+| H-16 | Inline | Native server room activation | RVA 0x4042A0 | Restore a checkpoint monster's rolled level 5 aura after room activation if it lost the skill | Exact entry, preset and inactive unit calls, room unit links, and the checkpoint aura guards above. Requires a living aura bearer on its Descent floor. | src/dungeon_layout.cpp / ActivateServerRoom | Uses the same aura and modifier slot as the initial spawn. |
 
 ## Known collision overlaps
 
@@ -45,4 +48,6 @@ None identified in the current inventory; this is not a compatibility guarantee.
 
 ## Audit notes
 
-The sidecar guards install in one SDK transaction. Other hooks use separate transactions. Release 1.0.0 uses the same hook sites and validation as the 0.3.19 test build. The runtime resolves the installed area, layer, lava preset, and town warp IDs from the mod's files. In-memory automap retention uses the installed Descent layer range.
+The sidecar guards install in one SDK transaction. Other hooks use separate transactions. Compared with release 1.0.0, release 1.2.2 adds H-14, H-15, and H-16 for checkpoint names, initial checkpoint auras, and aura restoration. The other hook sites are unchanged. The new entry points and supporting layout witnesses were validated against the audited build. In-game checks verified level 5 Defiance reaching Council members and guards, persistence after returning from town, and Conviction during normal monster AI operation. Disabled monster AI can prevent aura execution.
+
+The runtime resolves the installed area, layer, lava preset, and town warp IDs from the mod's files. In-memory automap retention uses the installed Descent layer range. Other game builds have not been validated; hooks fail closed when their expected instructions or layouts do not match.

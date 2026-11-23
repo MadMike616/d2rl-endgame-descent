@@ -12,7 +12,7 @@ from stair_assets import HARROGATH_HD_TOWN, LAVA_STAIRS
 
 
 def fields(row):
-    return {key: value for key, value in row.items() if value and not key.startswith("*")}
+    return {key: value for key, value in row.items() if value}
 
 
 def generate(stock, excel, output, stage):

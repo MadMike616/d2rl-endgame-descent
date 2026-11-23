@@ -68,4 +68,5 @@ bool InstallDungeonLayout(const D2RL::PluginContext* context, const D2RL::Mutati
 bool InstallDungeonLoot(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept;
 bool InstallDungeonEntrance(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept;
 bool IsDungeonCheckpointBoss(std::uint32_t floor, std::uint32_t classId) noexcept;
+bool IsCheckpointAuraBearer(std::uint32_t floor, std::uint32_t classId) noexcept;
 std::uint32_t DungeonSessionSeed() noexcept;

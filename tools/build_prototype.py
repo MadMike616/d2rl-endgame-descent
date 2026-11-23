@@ -144,20 +144,60 @@ def boss_variants():
             yield floor, boss, 0
 
 
-def table_bytes(raw, rows):
-    columns = next(csv.reader(io.StringIO(raw.decode("utf-8-sig")), delimiter="\t"))
-    result = io.StringIO(newline="")
-    csv.DictWriter(result, columns, delimiter="\t", lineterminator="\r\n").writerows(rows)
-    return result.getvalue().encode("utf-8")
+TABLE_KEYS = {
+    "levels.txt": "Id", "lvlmaze.txt": "Level", "lvlprest.txt": "Def", "lvlwarp.txt": "Id",
+    "monstats.txt": "Id", "monlvl.txt": "Level", "treasureclassex.txt": "Treasure Class",
+    "armor.txt": "code", "weapons.txt": "code", "misc.txt": "code",
+}
+MONSTER_SCALING_COLUMNS = {
+    f"{prefix}{stat}{difficulty}"
+    for stat in ("AC", "TH", "HP", "DM", "XP")
+    for prefix in ("", "L-")
+    for difficulty in ("", "(N)", "(H)")
+}
+
+
+def validate_header(path, columns):
+    if not columns or "" in columns:
+        raise ValueError(f"{path} has an empty column name")
+    if len(columns) != len(set(columns)):
+        raise ValueError(f"{path} has duplicate column names")
+    key = TABLE_KEYS[path.name]
+    if key not in columns:
+        raise ValueError(f"{path} is missing required key column {key}")
+    return key
 
 
 def table(path):
     raw = path.read_bytes()
-    return raw, list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig")), delimiter="\t"))
+    reader = csv.DictReader(io.StringIO(raw.decode("utf-8-sig")), delimiter="\t")
+    validate_header(path, reader.fieldnames)
+    rows = []
+    for row in reader:
+        if None in row:
+            raise ValueError(f"{path} has a row with more fields than its header")
+        rows.append({name: value if value is not None else "" for name, value in row.items()})
+    return raw, rows
 
 
-def append_rows(raw, rows):
-    return raw.rstrip(b"\r\n") + b"\r\n" + table_bytes(raw, rows)
+def append_rows(raw, rows, path):
+    columns = next(csv.reader(io.StringIO(raw.decode("utf-8-sig")), delimiter="\t"), [])
+    key = validate_header(path, columns)
+    result = io.StringIO(newline="")
+    writer = csv.DictWriter(result, columns, delimiter="\t", lineterminator="\r\n")
+    active_names = set(columns)
+    for row in rows:
+        if "" in row or key not in row:
+            raise ValueError(f"{path} has an empty source column name or a source row missing {key}")
+        for name, value in row.items():
+            if name != "*Creator" and name not in active_names and value not in (None, ""):
+                raise ValueError(f"{path} is missing active column {name} for a nonempty Descent source value")
+        mapped = {name: row.get(name, "") for name in columns}
+        if "*Creator" in mapped:
+            mapped["*Creator"] = "MadMike"
+        writer.writerow(mapped)
+    separator = b"" if raw.endswith(b"\n") else b"\r\n"
+    return raw + separator + result.getvalue().encode("utf-8")
 
 
 def write(output, relative, data):
@@ -192,7 +232,7 @@ def write_monster_scaling(data, output):
     trend_length = 10
     growth = {
         column: int(trend_end[column]) - int(trend_start[column])
-        for column in anchor if column != "Level"
+        for column in anchor if column in MONSTER_SCALING_COLUMNS
     }
     extended = []
     for level in range(len(rows), last_monster_level + 1):
@@ -201,7 +241,7 @@ def write_monster_scaling(data, output):
         for column, increase in growth.items():
             row[column] = max(0, int(anchor[column]) + (increase * steps + trend_length // 2) // trend_length)
         extended.append(row)
-    write(output, relative, append_rows(raw, extended))
+    write(output, relative, append_rows(raw, extended, relative))
 
 
 def treasure_class(name, drops, **settings):
@@ -353,7 +393,7 @@ def write_checkpoint_bosses(data, output):
             elif column.startswith("TreasureClass") and column.endswith("(H)"):
                 variant[column] = reward
         variants.append(variant)
-    write(output, relative, append_rows(raw, variants) if variants else raw)
+    write(output, relative, append_rows(raw, variants, relative) if variants else raw)
 
 
 def write_harrogath_entrance(data, output):
@@ -394,7 +434,7 @@ def write_harrogath_entrance(data, output):
     }
     if any(row["Id"] == str(warp["Id"]) or row["UniqueId"] == str(warp["UniqueId"]) for row in rows):
         raise ValueError("lvlwarp.txt already uses Descent warp ID 83 or unique ID 88")
-    write(output, relative, append_rows(raw, [warp]))
+    write(output, relative, append_rows(raw, [warp], relative))
 
     write(output, HARROGATH_TOWN, harrogath_door(data.file(HARROGATH_TOWN).read_bytes()))
     write(output, HARROGATH_HD_TOWN, harrogath_hover_light(data.file(HARROGATH_HD_TOWN).read_bytes()))
@@ -475,8 +515,8 @@ def write_tables(data, output):
     })
     entrance.update(LevelName=ENTRANCE_KEY, LevelWarp=ENTRANCE_KEY, LevelEntry=ENTRANCE_KEY, Position=0)
     clear_population(entrance)
-    write(output, EXCEL / "levels.txt", append_rows(raw, new_levels + [entrance]))
-    write(output, EXCEL / "lvlmaze.txt", append_rows(maze_raw, mazes))
+    write(output, EXCEL / "levels.txt", append_rows(raw, new_levels + [entrance], EXCEL / "levels.txt"))
+    write(output, EXCEL / "lvlmaze.txt", append_rows(maze_raw, mazes, EXCEL / "lvlmaze.txt"))
 
     _, rows = table(data.stock_file(EXCEL / "lvlprest.txt"))
     by_def = {int(row["Def"]): row for row in rows if row["Def"].isdigit()}
@@ -487,7 +527,7 @@ def write_tables(data, output):
     custom_presets = [by_def[294] | {
         "Name": "Descent Entrance", "Def": 1092, "LevelId": ENTRANCE_AREA, "Populate": 0,
     }, *lava_presets(by_def, data.stock, output, write)]
-    write(output, EXCEL / "lvlprest.txt", append_rows(raw, custom_presets))
+    write(output, EXCEL / "lvlprest.txt", append_rows(raw, custom_presets, EXCEL / "lvlprest.txt"))
 
     write_harrogath_entrance(data, output)
     write_checkpoint_bosses(data, output)
@@ -501,8 +541,9 @@ def write_tables(data, output):
     if group is None:
         raise ValueError("treasureclassex.txt has no free group range for the Descent bonus classes")
     rewards = checkpoints[:-len(CHECKPOINTS)] + depth_bonus_rewards(data, group)
-    rewards += bonus_item_rewards(data, group) + floor_rewards
-    rewards.extend(council_reward(floor, row) for floor, row in zip(CHECKPOINTS, floor_rewards, strict=True))
+    rewards += bonus_item_rewards(data, group)
+    for floor, row in zip(CHECKPOINTS, floor_rewards, strict=True):
+        rewards.extend((row, council_reward(floor, row)))
     reward_names = {row["Treasure Class"] for row in rewards}
     source_names = {row["Treasure Class"] for row in rows}
     referenced_pools = {"Act 5 (H) Equip C", "Jewelry C", "Flawless Gem", "Perfect Gem", "Runes 17"}
@@ -510,7 +551,7 @@ def write_tables(data, output):
         raise ValueError(f"treasureclassex.txt is missing required pools: {', '.join(sorted(missing))}")
     if collisions := reward_names & source_names:
         raise ValueError(f"treasureclassex.txt already uses these Descent names: {', '.join(sorted(collisions))}")
-    write(output, EXCEL / "treasureclassex.txt", append_rows(raw, rewards))
+    write(output, EXCEL / "treasureclassex.txt", append_rows(raw, rewards, EXCEL / "treasureclassex.txt"))
     write_monster_scaling(data, output)
 
 
@@ -583,7 +624,7 @@ def write_monster_models(data, output):
     models = json.loads(raw.decode("utf-8-sig"))
     stock_models = json.loads(data.stock_file(MONSTER_MODELS).read_text(encoding="utf-8-sig"))
     aliases = {}
-    for floor, boss, name_index in boss_variants():
+    for floor, boss, name_index in sorted(boss_variants()):
         ident = boss_id(floor, boss, name_index)
         source_id = COUNCIL[boss][0] if boss in COUNCIL else BOSSES[boss]
         model = models.get(source_id, stock_models[source_id])

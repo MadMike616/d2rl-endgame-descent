@@ -24,6 +24,9 @@ constexpr std::uintptr_t PopulateMonstersRva = 0x50ACF0;
 constexpr std::uintptr_t SpawnPackRva = 0x50B7E0;
 constexpr std::uintptr_t PopulatePackReturnRva = 0x50B114;
 constexpr std::uintptr_t SpawnPackMemberRva = 0x492BF0;
+constexpr std::uintptr_t SpawnPresetMonsterRva = 0x50A050;
+constexpr std::uintptr_t PresetMonsterReturnRva = 0x48DED2;
+constexpr std::uintptr_t ActivateServerRoomRva = 0x4042A0;
 constexpr std::uint32_t MazeLevelType = 1;
 constexpr std::uint32_t CryptTiles = 4;
 constexpr std::uint32_t IceTiles = 33;
@@ -64,6 +67,8 @@ using SpawnPackFn = void*(__fastcall*)(void* game, void* room, void* placement, 
                                       std::uint8_t minimum, std::uint8_t maximum) noexcept;
 using SpawnPackMemberFn = void*(__fastcall*)(void* game, void* placement, void* leader, int monsterId,
                                             int mode, int distance, std::uint16_t flags) noexcept;
+using SpawnPresetMonsterFn = void*(__fastcall*)(void* game, void* room, int monsterId, int x, int y,
+                                                int mode, std::uint16_t flags) noexcept;
 
 const D2RL::PluginContext* pluginContext = nullptr;
 const D2RL::DataTableService* tables = nullptr;
@@ -74,6 +79,8 @@ std::atomic<PositionMazeFn> originalPositionMaze = nullptr;
 std::atomic<GenerateMazeFn> originalGenerateMaze = nullptr;
 std::atomic<PopulateMonstersFn> originalPopulateMonsters = nullptr;
 std::atomic<SpawnPackFn> originalSpawnPack = nullptr;
+std::atomic<SpawnPresetMonsterFn> originalSpawnPresetMonster = nullptr;
+std::atomic<PopulateMonstersFn> originalActivateServerRoom = nullptr;
 SpawnPackMemberFn spawnPackMember = nullptr;
 std::atomic_bool dungeonTablesReady = false;
 std::array<std::atomic<std::int32_t>, DungeonFloorCount> baseMonsterDensities{};
@@ -145,23 +152,30 @@ std::uint32_t DensityPercent(std::uint32_t sessionSeed, std::uint32_t floor) noe
     return 100 + MazeSeed(sessionSeed ^ 0xD4E12C77U, floor) % 51;
 }
 
-std::uint32_t DescentPopulationFloor(const void* game, const void* room) noexcept {
+const void* OfflineHellDungeonRoom(const void* game, const void* room) noexcept {
     if (game == nullptr || room == nullptr
         || !dungeonTablesReady.load(std::memory_order_acquire)
         || ReadField<std::uint8_t>(game, 0x104) != Hell
         || ReadField<std::uint8_t>(game, 0x106) != static_cast<std::uint8_t>(D2RL::DataTables::Bank::Rotw)
         || !isSinglePlayer()) {
-        return 0;
+        return nullptr;
     }
-    const auto* drlgRoom = ReadField<const void*>(room, 0x18);
-    if (drlgRoom == nullptr || (ReadField<std::uint32_t>(drlgRoom, 0x50) & 0x800000) != 0) {
-        return 0;
-    }
+    return ReadField<const void*>(room, 0x18);
+}
+
+std::uint32_t DescentRoomFloor(const void* drlgRoom) noexcept {
+    if (drlgRoom == nullptr) return 0;
     const auto* level = ReadField<const void*>(drlgRoom, 0x90);
     if (level == nullptr) {
         return 0;
     }
     return dungeonPlacement.Floor(ReadField<std::uint32_t>(level, 0x1F8));
+}
+
+std::uint32_t DescentPopulationFloor(const void* game, const void* room) noexcept {
+    const auto* drlgRoom = OfflineHellDungeonRoom(game, room);
+    if (drlgRoom == nullptr || (ReadField<std::uint32_t>(drlgRoom, 0x50) & 0x800000) != 0) return 0;
+    return DescentRoomFloor(drlgRoom);
 }
 
 void ApplyMonsterDensity(void* game, const void* room) noexcept {
@@ -245,6 +259,44 @@ void* __fastcall SpawnPack(void* game, void* room, void* placement, int monsterI
         ApplyPackModifier(leader, floor, monsterId, packSeed);
     }
     return leader;
+}
+
+void* __fastcall SpawnPresetMonster(void* game, void* room, int monsterId, int x, int y,
+                                   int mode, std::uint16_t flags) noexcept {
+    const auto original = originalSpawnPresetMonster.load(std::memory_order_acquire);
+    if (original == nullptr) return nullptr;
+
+    auto* monster = original(game, room, monsterId, x, y, mode, flags);
+    const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress()) - pluginContext->exeBase;
+    if (caller == PresetMonsterReturnRva && monster != nullptr && ReadField<std::uint32_t>(monster, 0) == 1
+        && ReadField<int>(monster, 4) == monsterId) {
+        // Stair rooms may suppress ordinary population while still hosting preset bosses.
+        const auto floor = DescentRoomFloor(OfflineHellDungeonRoom(game, room));
+        if (IsCheckpointAuraBearer(floor, static_cast<std::uint32_t>(monsterId))) {
+            ApplyCheckpointAura(monster, floor, EnsureDungeonSessionSeed());
+        }
+    }
+    return monster;
+}
+
+void __fastcall ActivateServerRoom(void* game, void* room) noexcept {
+    const auto original = originalActivateServerRoom.load(std::memory_order_acquire);
+    if (original == nullptr) return;
+    original(game, room);
+
+    const auto floor = DescentRoomFloor(OfflineHellDungeonRoom(game, room));
+    if (floor == 0 || floor % DungeonSectionSize != 0) return;
+    // Preset creation and restoration of inactive units both finish before this pass.
+    auto* unit = ReadField<void*>(room, 0xA8);
+    for (unsigned count = 0; unit != nullptr && count < 512; ++count) {
+        if (ReadField<std::uint32_t>(unit, 0) == 1) {
+            const auto mode = ReadField<std::uint32_t>(unit, 0x0C);
+            if (mode != 0 && mode != 12 && IsCheckpointAuraBearer(floor, ReadField<std::uint32_t>(unit, 4))) {
+                ApplyCheckpointAura(unit, floor, EnsureDungeonSessionSeed());
+            }
+        }
+        unit = ReadField<void*>(unit, 0x160);
+    }
 }
 
 bool HasRoomPreset(const void* level, std::uint32_t firstDef, std::uint32_t lastDef) noexcept {
@@ -460,6 +512,64 @@ constexpr std::uint8_t PopulationSeedUpdate[]{
     0x00, 0x48, 0xC1, 0xE8, 0x20, 0x89, 0x83, 0xAC, 0x01, 0x00, 0x00,
 };
 
+constexpr std::uint8_t SpawnPresetMonsterEntry[]{
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18,
+    0x44, 0x89, 0x4C, 0x24, 0x20,
+};
+constexpr std::uint8_t SpawnPresetMonsterCaller[]{
+    0x66, 0x89, 0x4C, 0x24, 0x30, 0x45, 0x8B, 0xCE, 0x44, 0x89, 0x64, 0x24, 0x28,
+    0x48, 0x8B, 0xCE, 0x44, 0x8B, 0xC7, 0x44, 0x89, 0x7C, 0x24, 0x20, 0xE8, 0x7E, 0xC1, 0x07, 0x00,
+};
+constexpr std::uint8_t ActivateServerRoomEntry[]{
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xDA, 0x48, 0x8B, 0xF9,
+};
+constexpr std::uint8_t ActivateRoomPresetsAndInactive[]{
+    0x48, 0x8B, 0xD3, 0x48, 0x8B, 0xCF, 0xE8, 0xC4, 0xAE, 0x08, 0x00,
+    0x48, 0x8B, 0xD3, 0x48, 0x8B, 0xCF, 0xE8, 0xB9, 0xF4, 0x0F, 0x00,
+};
+constexpr std::uint8_t ActivateRoomInactiveOnly[]{
+    0x48, 0x8B, 0xD3, 0x48, 0x8B, 0xCF, 0xE8, 0x7D, 0xF4, 0x0F, 0x00,
+};
+constexpr std::uint8_t RoomFirstUnit[]{0x48, 0x8B, 0x81, 0xA8, 0x00, 0x00, 0x00};
+constexpr std::uint8_t RoomNextUnit[]{0x48, 0x8B, 0x81, 0x60, 0x01, 0x00, 0x00};
+
+bool VerifyPopulationLayout(const D2RL::PluginContext* context) noexcept {
+    return isSinglePlayer != nullptr
+        && context->CheckExpectedBytes(0x2EFD00, RoomLookup, sizeof(RoomLookup))
+        && context->CheckExpectedBytes(0x361011, RoomArea, sizeof(RoomArea))
+        && context->CheckExpectedBytes(0x447D55, PopulationDifficulty, sizeof(PopulationDifficulty))
+        && context->CheckExpectedBytes(0x50AD7D, PopulationBank, sizeof(PopulationBank));
+}
+
+bool InstallCheckpointAuras(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept {
+    if (!VerifyPopulationLayout(context)
+        || !context->CheckExpectedBytes(PresetMonsterReturnRva - sizeof(SpawnPresetMonsterCaller),
+                                        SpawnPresetMonsterCaller, sizeof(SpawnPresetMonsterCaller))
+        || !EnableMonsterAuraSkills(context)) {
+        context->LogWarn("Descent checkpoint auras unavailable. Could not verify the preset monster or aura helpers.");
+        return true;
+    }
+    const auto status = InstallHook(context, mutations, SpawnPresetMonsterRva, SpawnPresetMonsterEntry,
+                                    SpawnPresetMonster, originalSpawnPresetMonster);
+    if (status != HookStatus::Installed) {
+        context->LogWarn("Could not install the Descent checkpoint aura hook.");
+        return status != HookStatus::MissingOriginal;
+    }
+    context->LogInfo("Enabled one level 5 aura per Descent checkpoint encounter.");
+
+    if (!context->CheckExpectedBytes(0x4042C1, ActivateRoomPresetsAndInactive, sizeof(ActivateRoomPresetsAndInactive))
+        || !context->CheckExpectedBytes(0x404308, ActivateRoomInactiveOnly, sizeof(ActivateRoomInactiveOnly))
+        || !context->CheckExpectedBytes(0x3E225E, RoomFirstUnit, sizeof(RoomFirstUnit))
+        || !context->CheckExpectedBytes(0x34B4CE, RoomNextUnit, sizeof(RoomNextUnit))) {
+        context->LogWarn("Descent checkpoint aura restoration unavailable. Could not verify the active room layout.");
+        return true;
+    }
+    const auto restoreStatus = InstallHook(context, mutations, ActivateServerRoomRva, ActivateServerRoomEntry,
+                                           ActivateServerRoom, originalActivateServerRoom);
+    if (restoreStatus != HookStatus::Installed) context->LogWarn("Could not install checkpoint aura restoration.");
+    return restoreStatus != HookStatus::MissingOriginal;
+}
+
 bool InstallPackReinforcements(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept {
     if (originalPopulateMonsters.load(std::memory_order_acquire) == nullptr
         || !context->CheckExpectedBytes(PopulatePackReturnRva - sizeof(PackCaller), PackCaller, sizeof(PackCaller))
@@ -485,14 +595,11 @@ bool InstallPackReinforcements(const D2RL::PluginContext* context, const D2RL::M
 
 bool InstallDensity(const D2RL::PluginContext* context, const D2RL::MutationService* mutations) noexcept {
     if (originalGenerateMaze.load(std::memory_order_acquire) == nullptr
+        || !VerifyPopulationLayout(context)
         || !context->CheckExpectedBytes(0x4042E2, PopulationCaller, sizeof(PopulationCaller))
         || !context->CheckExpectedBytes(0x50ADFA, PopulationRegion, sizeof(PopulationRegion))
         || !context->CheckExpectedBytes(0x508740, RegionLookup, sizeof(RegionLookup))
-        || !context->CheckExpectedBytes(0x2EFD00, RoomLookup, sizeof(RoomLookup))
-        || !context->CheckExpectedBytes(0x361011, RoomArea, sizeof(RoomArea))
         || !context->CheckExpectedBytes(0x508916, DensityLoad, sizeof(DensityLoad))
-        || !context->CheckExpectedBytes(0x447D55, PopulationDifficulty, sizeof(PopulationDifficulty))
-        || !context->CheckExpectedBytes(0x50AD7D, PopulationBank, sizeof(PopulationBank))
         || !context->CheckExpectedBytes(0x32C56E, LevelsStride, sizeof(LevelsStride))
         || !context->CheckExpectedBytes(0x50AF03, DensityCheck, sizeof(DensityCheck))) {
         context->LogWarn("Descent density unavailable. Could not verify the monster population path or game seed.");
@@ -588,5 +695,5 @@ bool InstallDungeonLayout(const D2RL::PluginContext* context, const D2RL::Mutati
         return true;
     }
     return InstallMazeReroll(context, mutations, lifecycle) && InstallDensity(context, mutations)
-        && InstallPackReinforcements(context, mutations);
+        && InstallPackReinforcements(context, mutations) && InstallCheckpointAuras(context, mutations);
 }
