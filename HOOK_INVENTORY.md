@@ -53,3 +53,5 @@ The sidecar guards install in one SDK transaction. Other hooks use separate tran
 The runtime resolves the installed area, layer, lava preset, and town warp IDs from the mod's files. In-memory automap retention uses the installed Descent layer range. Other game builds have not been validated; hooks fail closed when their expected instructions or layouts do not match.
 
 Release 1.2.3 source review: TOML installation completion and configuration mirroring add no native hook, patch, vtable, or OS input-hook targets. Hook-site changes since the previous release: none. Startup completion was checked in the testing environment; the existing native validation limits above still apply.
+
+2026-11-27 release packaging/documentation review: no hook-site changes; the published DLL is unchanged.

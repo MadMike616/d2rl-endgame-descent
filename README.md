@@ -53,3 +53,5 @@ After successful first-run setup, the plugin records a completion token in its T
 The completion token does not replace the installed dungeon files. If they are removed, restore them or reset the token to rerun setup.
 
 To rerun setup intentionally, close the game and set `complete = false` in the relevant token section (`[installation]` by default).
+
+Installable release ZIPs include the plugin documentation and applicable SDK and JSON-library licenses.
