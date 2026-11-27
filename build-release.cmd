@@ -12,7 +12,7 @@ if not exist "%DESCENT_SDK%\D2RLPlugin\api.h" (
     echo Pass the root directory of D2RLoader PluginSDK 0.4.0 as the first argument.
     exit /b 1
 )
-set "DESCENT_BUILD=%~dp0..\.build\endgame-descent-1.2.2"
+set "DESCENT_BUILD=%~dp0..\.build\endgame-descent-1.2.3"
 if not exist "%DESCENT_BUILD%" mkdir "%DESCENT_BUILD%"
 
 cl.exe /nologo /std:c++20 /W4 /permissive- /EHsc /utf-8 /O2 /MT /DNDEBUG /I"%DESCENT_SDK%" /c "%DESCENT_SOURCE%src\plugin.cpp" /Fo"%DESCENT_BUILD%\plugin.obj"

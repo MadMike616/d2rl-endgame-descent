@@ -1,3 +1,4 @@
+#include "install_token.hpp"
 #include "installer.h"
 #include "dungeon_layout.h"
 
@@ -940,6 +941,11 @@ bool CheckInstalled(const Paths& paths, const D2RL::PluginContext& context) {
 }
 
 InstallResult Install(const Paths& paths, const D2RL::PluginContext& context) {
+    if (InstallToken::Complete(context)) {
+        // Runtime ID validation does not prepare, back up, or write install files.
+        if (!CheckInstalled(paths,context)) throw std::runtime_error("Completed dungeon installation is missing; restore it or reset installation.complete");
+        return InstallResult::Ready;
+    }
     const auto excel = paths.Target(Excel);
     if (fs::is_directory(excel)) {
         for (const auto& entry : fs::directory_iterator(excel)) {
@@ -949,7 +955,10 @@ InstallResult Install(const Paths& paths, const D2RL::PluginContext& context) {
                 + ". Install on a copy of the mod with its complete editable TXT sources. Remove the compiled BIN set from that copy before retrying.");
         }
     }
-    if (CheckInstalled(paths, context)) return InstallResult::Ready;
+    if (CheckInstalled(paths, context)) {
+        InstallToken::Commit(context);
+        return InstallResult::Ready;
+    }
     const auto seed = Seed();
     const auto inputs = FindInputs(paths, seed, context);
     const auto levelFile = fs::path(Excel) / L"levels.txt";
@@ -1030,6 +1039,7 @@ InstallResult InstallDescentData(const D2RL::PluginContext& context) noexcept {
         const auto paths = Locate(context);
         const InstallLock lock;
         const auto result = Install(paths, context);
+        if (result != InstallResult::Failed && !InstallToken::Complete(context)) InstallToken::Commit(context);
         if (result == InstallResult::RestartRequired)
             context.LogInfo("Endgame Descent setup complete. Restart D2RLoader with the same mod to enter the dungeon.");
         return result;

@@ -6,8 +6,8 @@ D2RL_PLUGIN_MANIFEST_RESOURCE_ID RCDATA { D2RL_PLUGIN_RESOURCE_DWORD(D2RL_PLUGIN
 210 RCDATA "assets/install-data.json"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 1,2,2,0
- PRODUCTVERSION 1,2,2,0
+ FILEVERSION 1,2,3,0
+ PRODUCTVERSION 1,2,3,0
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -21,11 +21,11 @@ BEGIN
             VALUE "Author", "MadMike"
             VALUE "CompanyName", "MadMike"
             VALUE "FileDescription", "Endgame Descent"
-            VALUE "FileVersion", "1.2.2"
+            VALUE "FileVersion", "1.2.3"
             VALUE "InternalName", "d2rl-endgame-descent"
             VALUE "OriginalFilename", "d2rl-endgame-descent.dll"
             VALUE "ProductName", "Endgame Descent"
-            VALUE "ProductVersion", "1.2.2"
+            VALUE "ProductVersion", "1.2.3"
         END
     END
     BLOCK "VarFileInfo"

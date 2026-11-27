@@ -37,10 +37,19 @@ TXT rows are matched to the mod's columns by exact header name, including reorde
 
 ## Build
 
-From the Visual Studio x64 Native Tools Command Prompt, run `build-release.cmd "<PluginSDK root>"` with [D2RLoader PluginSDK 0.4.0](https://github.com/D2RLoader/PluginSDK). The script puts the Release DLL in the sibling `.build/endgame-descent-1.2.2` directory. The DLL embeds `src/assets/install-data.json`. To regenerate it, run `tools/generate-install-data.py` with the extracted stock data directory, the matching extracted Reign of the Warlock `global/excel` directory, the output JSON path, and a staging directory outside the source tree.
+From the Visual Studio x64 Native Tools Command Prompt, run `build-release.cmd "<PluginSDK root>"` with [D2RLoader PluginSDK 0.4.0](https://github.com/D2RLoader/PluginSDK). The script puts the Release DLL in the sibling `.build/endgame-descent-1.2.3` directory. The DLL embeds `src/assets/install-data.json`. To regenerate it, run `tools/generate-install-data.py` with the extracted stock data directory, the matching extracted Reign of the Warlock `global/excel` directory, the output JSON path, and a staging directory outside the source tree.
 
 The native hooks verify the expected instructions during loading. The audited setup used D2R 3.4.95032 with D2RLoader 1.3.1-beta. See `HOOK_INVENTORY.md` for the hook sites.
 
 ## License
 
 Endgame Descent is available under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for bundled and build-time dependencies.
+
+
+## Installation completion
+
+After successful first-run setup, the plugin records a completion token in its TOML configuration. Later launches skip that completed setup and preserve existing files and settings. Failed setup remains retryable.
+
+The completion token does not replace the installed dungeon files. If they are removed, restore them or reset the token to rerun setup.
+
+To rerun setup intentionally, close the game and set `complete = false` in the relevant token section (`[installation]` by default).

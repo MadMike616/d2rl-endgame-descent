@@ -6,9 +6,9 @@
 |---|---|
 | Plugin name | Endgame Descent |
 | Plugin ID | endgame-descent |
-| Release version | 1.2.2 |
-| Inventory updated | 2026-11-23 |
-| Source revision | v1.2.2 release source |
+| Release version | 1.2.3 |
+| Inventory updated | 2026-11-27 |
+| Source revision | v1.2.3 release source |
 | D2R build(s) audited | 3.4.95032 through D2RLoader 1.3.1-beta |
 | D2RLoader SDK / Plugin ABI | SDK 0.4.0 / ABI 4 |
 | Audit status | Complete |
@@ -51,3 +51,5 @@ None identified in the current inventory; this is not a compatibility guarantee.
 The sidecar guards install in one SDK transaction. Other hooks use separate transactions. Compared with release 1.0.0, release 1.2.2 adds H-14, H-15, and H-16 for checkpoint names, initial checkpoint auras, and aura restoration. The other hook sites are unchanged. The new entry points and supporting layout witnesses were validated against the audited build. In-game checks verified level 5 Defiance reaching Council members and guards, persistence after returning from town, and Conviction during normal monster AI operation. Disabled monster AI can prevent aura execution.
 
 The runtime resolves the installed area, layer, lava preset, and town warp IDs from the mod's files. In-memory automap retention uses the installed Descent layer range. Other game builds have not been validated; hooks fail closed when their expected instructions or layouts do not match.
+
+Release 1.2.3 source review: TOML installation completion and configuration mirroring add no native hook, patch, vtable, or OS input-hook targets. Hook-site changes since the previous release: none. Startup completion was checked in the testing environment; the existing native validation limits above still apply.
